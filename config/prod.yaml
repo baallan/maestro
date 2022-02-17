@@ -1,0 +1,145 @@
+cluster : prod
+defaults :
+  - l0_port : &l0-port "411"
+  - l1_port : &l1-port "413"
+  - rdma_sampler : &rdma_sampler
+      group : samplers
+      ports: *l0-port
+      xprt : rdma
+      auth :
+        name : ovis
+        config :
+          domain : samplers
+  - l0_producer: &l0_producer
+      group : l1-agg
+      reconnect : "20s"
+      type : active
+      updaters :
+        - l1-all
+
+namelists:
+  nodes: &all-nodes "pr[1-288],prod-login[1-3],pross[1-4],prmds[1-2],prldms1"
+  ib-nodes: &all-hosts "pr[1-288]-ib0,prod-login[1-3]-ib0,pross[1-4]-ib0,prmds[1-2]-ib0,prldms1-ib0"
+  rdma-nodes: &all-rdma "pr[1-288]/rdma,prod-login[1-3]/rdma,pross[1-4]/rdma,prmds[1-2]/rdma,prldms1/rdma"
+  sock-nodes: &all-sock "pr[1-288]/sock,prod-login[1-3]/sock,pross[1-4]/sock,prmds[1-2]/sock,prldms1/sock"
+
+daemons:
+  - names : *all-nodes 
+    hosts : *all-hosts
+    endpoints :
+      - names : *all-rdma
+        ports : &rdma-port "411"
+        maestro_comm : False
+        xprt : rdma
+        auth :
+          name : ovis
+          conf : /etc/sysconfig/ldms.d/ClusterSecrets/ldmsauth.conf
+
+      - names : *all-sock
+        ports : &sock-port "412"
+        maestro_comm : False
+        xprt : sock
+        auth :
+          name : munge
+
+  - names : &agg-name prldms1-agg
+    hosts : prldms1
+    endpoints :
+      - names : prldms1-agg
+        ports : "413"
+        maestro_comm : False
+        xprt : sock
+        auth :
+          name : ovis
+          conf : /etc/sysconfig/ldms.d/ClusterSecrets/ldmsauth.conf
+
+aggregators:
+  - daemons : *agg-name
+    peers : 
+      - daemons   : *all-nodes
+        endpoints : *all-rdma
+        reconnect : 20s
+        type      : active
+        updaters  :
+          - mode     : pull
+            interval : "1.0s"
+            offset   : "100ms"
+            sets     :
+              - regex : .*
+                field : inst
+
+sampler_time_defaults : &sampler-time-defaults
+  interval : "1s"
+  offset : "0s"
+sampler_config_defaults : &sampler-config-defaults
+  job_set : ${host}/jobid
+  component_id: ${COMPONENT_ID}
+  schema : ~{name}
+  instance : ${host}/~{schema}
+
+samplers:
+  - daemons : *agg-name
+    file : L1-samplers.conf
+    plugins :
+      - <<: *sampler-time-defaults
+        name : dstat
+        config :
+          <<: *sampler-config-defaults
+          io : 1
+          stat : 1
+          statm : 1
+          fdtypes : 1
+          auto-schema : 1
+
+  - daemons : *all-nodes
+    file : L0-samplers.conf
+    plugins :
+      - <<: *sampler-time-defaults
+        name : dstat
+        config :
+          io : 1
+          stat : 1
+          statm : 1
+          fdtypes : 1
+          auto-schema : 1
+      - <<: *sampler-time-defaults
+        offset : 2ms
+        name : vmstat
+
+      - <<: *sampler-time-defaults
+        offset : 0
+        name : meminfo
+
+
+store_config_defaults: &csv-defaults
+  name : csv-~{schema}
+  daemons : *agg-name
+  container : store_csv
+  plugin :
+    name : store_csv
+    config :
+      path : /ldmslocal/store
+      altheader : 0
+      typeheader : 1
+      create_uid : 3031
+      create_gid : 3031
+
+stores:
+# - <<: *csv-defaults
+#   schema : meminfo
+#
+# - <<: *csv-defaults
+#   schema : vmstat
+#
+  - name : csv-dstat
+    daemons : *agg-name
+    container : store_csv
+    schema : dstat_37
+    plugin :
+      name : store_csv
+      config : 
+        path : /ldmslocal/store
+        altheader : 0
+        typeheader : 1
+        create_uid : 3031
+        create_gid : 3031
