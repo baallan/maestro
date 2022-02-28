@@ -1,5 +1,7 @@
 import collections
 import hostlist
+import yaml
+import re
 
 AUTH_ATTRS = [
     'auth',
@@ -129,7 +131,7 @@ def parse_to_cfg_str(cfg_obj):
     cfg_str = ''
     for key in cfg_obj:
         if key not in INT_ATTRS:
-            if len(cfg_str) > 8:
+            if len(cfg_str) > 0:
                 cfg_str += ' '
             cfg_str += key + '=' + str(cfg_obj[key])
     return cfg_str
@@ -139,3 +141,64 @@ def parse_yaml_bool(bool_):
         return True
     else:
         return False
+
+class TildeSubs(object):
+    """manage a stack of dicts for ~{} expansion"""
+    def __init__(self):
+        self.stack = []
+        self.push(dict())
+        self.re = re.compile(r'~\{[^~{}]+\}')
+    def push(self, d):
+        """stash current dict."""
+        self.stack.append(d)
+    def pop(self):
+        del self.stack[-1]
+    def get_val(self, key):
+        """reverse search on stack for closest value of the key.
+           If nothing is found, returns False.
+           If empty string is found, returns None."""
+        for i in range(len(self.stack) -1, -1, -1):
+            if key in self.stack[i]:
+                return self.stack[i][key]
+        return False
+    def expand_val(self, val, debug=False):
+        """ DFBU substitution on a string. Returns (changed, newval)"""
+        if debug:
+            print("searching value: {}\n".format(val))
+        newval = ""
+        last = 0
+        changed = False
+        for m in self.re.finditer(val):
+            newval += val[last:m.start()]
+            last = m.end()
+            var = m.string[m.start():m.end()][2:-1]
+            if debug:
+                print("containing: {}\n".format(var))
+            s = self.get_val(var)
+            if s:
+                changed = True
+                newval += str(s)
+                if debug:
+                    print("replaced with: {}\n".format(s))
+            else:
+                if not isinstance(s, bool):
+                    changed = True
+                    if debug:
+                        print("empty replace: {}\n".format(var))
+                else:
+                    if debug:
+                        print("undefined: {}\n".format(var))
+        newval += val[last:]
+        return (changed, newval)
+    def expand_key(self, key, debug=False):
+        """ DFBU substitution on a key in deepest current dict"""
+        if debug:
+            print("checking: {}\n".format(key))
+        val = self.stack[-1][key]
+        (changed, newval) = self.expand_val(val, debug)
+        if changed:
+            if debug:
+                print("key updated: {} : {}\n".format(key, newval))
+            self.stack[-1][key] = newval
+        return changed
+
