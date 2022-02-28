@@ -1,21 +1,4 @@
 cluster : prod
-defaults :
-  - l0_port : &l0-port "411"
-  - l1_port : &l1-port "413"
-  - rdma_sampler : &rdma_sampler
-      group : samplers
-      ports: *l0-port
-      xprt : rdma
-      auth :
-        name : ovis
-        config :
-          domain : samplers
-  - l0_producer: &l0_producer
-      group : l1-agg
-      reconnect : "20s"
-      type : active
-      updaters :
-        - l1-all
 
 namelists:
   nodes: &all-nodes "pr[1-288],prod-login[1-3],pross[1-4],prmds[1-2],prldms1"
@@ -42,7 +25,7 @@ daemons:
         auth :
           name : munge
 
-  - names : &agg-name prldms1-agg
+  - names : &agg-name L1d-agg
     hosts : prldms1
     endpoints :
       - names : prldms1-agg
@@ -55,11 +38,32 @@ daemons:
 
 aggregators:
   - daemons : *agg-name
+# stuff not handled correctly in maestro yet
+    file : L1-agg
+    epilog : |
+      prdcr_subscribe regex=.* stream=kokkos-perf-data-ep
+      prdcr_subscribe regex=.* stream=kokkos-scivar-data
+      prdcr_subscribe regex=.* stream=kokkos-scivar-meta
+      prdcr_subscribe regex=.* stream=darshanConnector
+      prdcr_subscribe regex=.* stream=slurm
     peers : 
       - daemons   : *all-nodes
         endpoints : *all-rdma
         reconnect : 20s
         type      : active
+        subscribe :
+          - stream : 'kokkos-perf-data'
+            regex : .*
+          - stream : 'caliper-perf-data'
+            regex : .*
+          - stream : 'kokkos-scivar-data'
+            regex : .*
+          - stream : 'kokkos-scivar-meta'
+            regex : .*
+          - stream : 'darshanConnector'
+            regex : .*
+          - stream : 'slurm'
+            regex : .*
         updaters  :
           - mode     : pull
             interval : "1.0s"
@@ -71,15 +75,20 @@ aggregators:
 sampler_time_defaults : &sampler-time-defaults
   interval : "1s"
   offset : "0s"
+
 sampler_config_defaults : &sampler-config-defaults
   job_set : ${host}/jobid
   component_id: ${COMPONENT_ID}
   schema : ~{name}
   instance : ${host}/~{schema}
+  job_set : ${host}/jobid
+  perm : "0644"
 
 samplers:
   - daemons : *agg-name
-    file : L1-samplers.conf
+    file : L1-samplers
+    prolog : |
+      metric_sets_default_authz perm=0644
     plugins :
       - <<: *sampler-time-defaults
         name : dstat
@@ -90,25 +99,78 @@ samplers:
           statm : 1
           fdtypes : 1
           auto-schema : 1
+      - <<: *sampler-time-defaults
+        name : meminfo
+        config :
+          <<: *sampler-config-defaults
+          schema : meminfo_l1
 
   - daemons : *all-nodes
-    file : L0-samplers.conf
+    file : L0-samplers
+    prolog : |
+      metric_sets_default_authz perm=0644
+    epilog : |
+      auth_add name=munge plugin=munge
+      listen port=412 xprt=sock auth=munge
     plugins :
+      - <<: *sampler-time-defaults
+        name : jobid
+        config :
+          <<: *sampler-config-defaults
+          file : /var/run/ldms.slurm.jobinfo
+      - <<: *sampler-time-defaults
+        name : lustre_client
+        config :
+          <<: *sampler-config-defaults
+      - <<: *sampler-time-defaults
+        name : loadavg
+        config :
+          <<: *sampler-config-defaults
+      - <<: *sampler-time-defaults
+        name : tx2mon
+        config :
+          <<: *sampler-config-defaults
+      - <<: *sampler-time-defaults
+        name : meminfo
+        config :
+          <<: *sampler-config-defaults
+      - <<: *sampler-time-defaults
+        name : lnet_stats
+        config :
+          <<: *sampler-config-defaults
+      - <<: *sampler-time-defaults
+        name : vmstat
+        config :
+          <<: *sampler-config-defaults
+      - <<: *sampler-time-defaults
+        name : procnfs
+        config :
+          <<: *sampler-config-defaults
+      - <<: *sampler-time-defaults
+        name : procstat
+        config :
+          <<: *sampler-config-defaults
+          maxcpu : 0
+          schema : procstat_0
+      - <<: *sampler-time-defaults
+        name : procnet
+        config :
+          <<: *sampler-config-defaults
+      - <<: *sampler-time-defaults
+        name : sysclassib
+        config :
+          <<: *sampler-config-defaults
+          ports : "mlx5_0.1,mlx5_1.1"
+          schema : sysclassib_lserver
       - <<: *sampler-time-defaults
         name : dstat
         config :
+          <<: *sampler-config-defaults
           io : 1
           stat : 1
           statm : 1
           fdtypes : 1
           auto-schema : 1
-      - <<: *sampler-time-defaults
-        offset : 2ms
-        name : vmstat
-
-      - <<: *sampler-time-defaults
-        offset : 0
-        name : meminfo
 
 
 store_config_defaults: &csv-defaults
@@ -125,21 +187,37 @@ store_config_defaults: &csv-defaults
       create_gid : 3031
 
 stores:
-# - <<: *csv-defaults
-#   schema : meminfo
-#
-# - <<: *csv-defaults
-#   schema : vmstat
-#
-  - name : csv-dstat
-    daemons : *agg-name
-    container : store_csv
+  - <<: *csv-defaults
+    schema : jobid
+  - <<: *csv-defaults
+    schema : lustre_client
+  - <<: *csv-defaults
+    schema : loadavg
+  - <<: *csv-defaults
+    schema : tx2mon
+  - <<: *csv-defaults
+    schema : meminfo
+  - <<: *csv-defaults
+    schema : lnet_stats
+  - <<: *csv-defaults
+    schema : vmstat
+  - <<: *csv-defaults
+    schema : procnfs
+  - <<: *csv-defaults
+    schema : procstat
+  - <<: *csv-defaults
+    schema : procnet
+  - <<: *csv-defaults
+    schema : sysclassib
+
+  - <<: *csv-defaults
+    schema : meminfo_l1
+    metrics:
+      - Active
+      - MemFree
+
+  - <<: *csv-defaults
     schema : dstat_37
-    plugin :
-      name : store_csv
-      config : 
-        path : /ldmslocal/store
-        altheader : 0
-        typeheader : 1
-        create_uid : 3031
-        create_gid : 3031
+    producers:
+      - regex : "pr1.*"
+      - regex : "pr2.*"
