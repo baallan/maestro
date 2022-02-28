@@ -142,6 +142,7 @@ def parse_yaml_bool(bool_):
     else:
         return False
 
+# tilde substitution implementation
 class TildeSubs(object):
     """manage a stack of dicts for ~{} expansion"""
     def __init__(self):
@@ -202,3 +203,69 @@ class TildeSubs(object):
             self.stack[-1][key] = newval
         return changed
 
+# noetcd implementation
+class Decoder(object):
+    def __init__(self, s):
+        self.s = s
+    def decode(self):
+        return self.s
+
+class Meta(object):
+    def __init__(self, s):
+        self.key = Decoder(s)
+
+class NoetcdClient(object):
+    """Local-use-only, daemon-free replacement for python-etcd3 as used in
+       maestro_ctrl and maestro.
+       Provides only the portion of the py api needed for maestro call
+       compatibility.
+    """
+    def __init__(self, preload=None):
+        self.noetc = True
+        self.d = dict()
+        self.load_yaml(preload)
+    def get_prefix(self, prefix):
+        d = dict()
+        x = list(filter(lambda x: x[0].startswith(prefix), self.d.items()))
+        for (k, v) in x:
+            d[Meta(k)] = Decoder(v)
+        return d
+    def put(self, path, val):
+        self.d[path] = val
+    def add_watch_callback(self, key, cb):
+        """cb will never be called"""
+        pass
+    def delete_prefix(self, p):
+        kill = list(filter(lambda x: x.startswith(p), self.d.keys()))
+        for k in kill:
+            self.d.pop(k)
+    def load_yaml(self,filename):
+        if filename:
+            with open(filename) as f:
+                m = yaml.safe_load(f)
+                self.d.update(m)
+    def save_yaml(self,filename):
+        with open(filename, 'w') as f:
+            yaml.safe_dump(self.d, f, default_flow_style=False)
+    def print_all(self, filename=None):
+        if not filename:
+            for i in self.d.items():
+                print(i)
+        else:
+            with open(filename, 'w') as f:
+                for i in self.d.items():
+                    print(i, file=f)
+
+    def test(self):
+        self.put("bob", "1")
+        self.put("/bar", "1")
+        self.put("/foo", "1")
+        print(self.d)
+        x = self.get_prefix("/b")
+        print("x {}".format(x))
+        self.delete_prefix("/")
+        print(self.d)
+
+if __name__ == "__main__":
+    n = NoetcdClient()
+    n.test()

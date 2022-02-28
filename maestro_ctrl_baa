@@ -696,7 +696,7 @@ if __name__ == "__main__":
 
     # Use the 1st host for now
     if args.noetcd:
-        from noetcd import NoetcdClient
+        # from noetcd import NoetcdClient
         print("create noetcd3 client\n")
         client = NoetcdClient()
     else:
