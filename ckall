@@ -1,0 +1,22 @@
+#! /bin/bash
+input="new_config prod"
+newinput="stria"
+for i in $input; do
+	if ! test -d ./${i}.base; then
+		mkdir -p ./${i}.base
+	fi
+	echo "============= $i base ============"
+	./maestro_ctrl --cluster config/localetcd.yaml --ldms_config config/$i.yaml --prefix $i --generate-config-path ./$i.base > log.base.$i
+	ls -l ${i}.base
+	echo "============= done $i base ============"
+done
+
+for i in $newinput $input; do
+	if ! test -d ./$i.new; then
+		mkdir -p ./${i}.new
+	fi
+	echo "============= $i new ============"
+	./maestro_ctrl_baa --noetcd --debug --cluster config/localetcd.yaml --ldms_config config/$i.yaml --prefix $i --generate-config-path ./${i}.new > log.new.$i
+	ls -l ${i}.new
+	echo "============= done $i new ============"
+done
