@@ -16,7 +16,7 @@ for i in $newinput $input; do
 		mkdir -p ./${i}.new
 	fi
 	echo "============= $i new ============"
-	./maestro_ctrl_baa --noetcd --debug --cluster config/localetcd.yaml --ldms_config config/$i.yaml --prefix $i --generate-config-path ./${i}.new > log.new.$i
+	./maestro_ctrl_baa --noetcd  --cluster config/localetcd.yaml --ldms_config config/$i.yaml --prefix $i --generate-config-path ./${i}.new > log.new.$i
 	ls -l ${i}.new
 	echo "============= done $i new ============"
 done

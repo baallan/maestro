@@ -16,28 +16,33 @@ class Cluster(object):
         except Exception as e:
             print("Error {0} setting {1} : {2}".format(str(e), path, str(value)))
 
-    def walk_tilde(self, obj, subs=None, debug=False):
+    def walk_tilde(self, obj, subs=None, debug=False, depth=0):
         """Walk the obj given and apply ~{} string replacement in place.
            In scalar values, ~{var} is replaced by its value if
            var is the name of scalar value at the same or higher scope.
            This provides us the ability to say:
            cluster: foo
-           config:
-             - plugin: bar
-             - inst: ~{cluster}/${HOSTNAME}/~{plugin}
+             plugins:
+               - name: bar
+                 instance: ~{cluster}/${HOSTNAME}/~{name}
            which is not a feature of yaml or json.
-           Needed since yaml anchors do not substitute within strings.
+           Needed since yaml anchors do not substitute within strings
+           or substitute in a nearest nested scope sense.
         """
         if not subs:
             subs = TildeSubs()
+            subs.expand_anchor(obj, {}, debug)
+        debug = False
         if isinstance(obj, (int, float, bool, str)):
-            print(obj)
-            print(dir(obj))
+            if debug:
+                print(obj)
             return
         if isinstance(obj, Sequence):
             i = 0
             for v in obj:
-                self.walk_tilde(v, subs=subs, debug=debug)
+                if debug:
+                    print("depth {}: list[{}]".format(depth, i))
+                self.walk_tilde(v, subs=subs, debug=debug, depth=depth+1)
                 if isinstance(v, str):
                     changed = True
                     newval = v
@@ -49,7 +54,9 @@ class Cluster(object):
         if isinstance(obj, Mapping):
             subs.push(obj)
             for (key, value) in obj.items():
-                self.walk_tilde(value, subs=subs, debug=debug)
+                if debug:
+                    print("depth {}: map[{}]".format(depth, key))
+                self.walk_tilde(value, subs=subs, debug=debug, depth=depth+1)
             changed = True
             while changed:
                 changed = False
@@ -294,9 +301,8 @@ class Cluster(object):
 
     def build_stores(self, config):
         """
-        Return a list. Each list entry is a list of stores in that group.
-        Not enough information is available at this scope for enforcement
-        of name uniqueness, thus a list and not a map.
+        Return a dictionary keyed by the group name. Each dictionary
+        entry is a list of stores in that group.
         """
         if 'stores' not in config:
             return None
@@ -306,12 +312,17 @@ class Cluster(object):
                            store_spec, '"store" entry')
             group = store_spec['daemons']
             if group not in stores:
-                stores[group] = []
+                stores[group] = {}
             grp_stores = stores[group]
+            store_name = store_spec['name']
+            if store_name in grp_stores:
+                raise ValueError(f"Duplicate store name '{store_name}''. "
+                            "A store name must be unique within the group")
+
             check_required([ 'name', 'config'],
                            store_spec['plugin'],
                            '"store plugin" entry')
-            grp_stores.append(store_spec)
+            grp_stores[store_name] = store_spec
         return stores
 
     def build_samplers(self, config):
@@ -362,8 +373,7 @@ class Cluster(object):
         self.cluster_config = cluster_config
         # keep a config copy until we are sure we don't need unsubst round-trip
         self.cluster_config_raw = copy.deepcopy(cluster_config)
-        # expand ~{} substitutions
-        self.walk_tilde(self.cluster_config)
+        self.walk_tilde(self.cluster_config, debug=False)
         print(yaml.dump(conf_spec, indent=4, default_flow_style=False))
         self.daemons = self.build_daemons(self.cluster_config)
         self.aggregators = self.build_aggregators(self.cluster_config)
@@ -522,60 +532,33 @@ class Cluster(object):
             store_group = self.stores[group_name]
             loaded_plugins = []
             for store in store_group:
-                if store["plugin"]["name"] not in loaded_plugins:
-                    fd.write(f'load name={store["plugin"]["name"]}\n')
-                    fd.write(f'config name={store["plugin"]["name"]} '+
-                             f'{parse_to_cfg_str(store["plugin"]["config"])}\n')
-                    loaded_plugins.append(store["plugin"]["name"])
-                # enable store policy default with ~{schema}
-                store_name = self.map_tilde(store, "name")
-                strgp_add = f'#\nstrgp_add name={store_name} plugin={store["plugin"]["name"]} '
-                strgp_add += f'container={store["container"]} '
-                strgp_add += f'schema={store["schema"]}'
+                if store_group[store]["plugin"]["name"] not in loaded_plugins:
+                    fd.write(f'load name={store_group[store]["plugin"]["name"]}\n')
+                    fd.write(f'config name={store_group[store]["plugin"]["name"]} '+
+                             f'{parse_to_cfg_str(store_group[store]["plugin"]["config"])}\n')
+                    loaded_plugins.append(store_group[store]["plugin"]["name"])
+                strgp_add = f'#\nstrgp_add name={store} plugin={store_group[store]["plugin"]["name"]} '
+                strgp_add += f'container={store_group[store]["container"]} '
+                strgp_add += f'schema={store_group[store]["schema"]}'
                 fd.write(strgp_add)
                 # handle optional flush, metrics, and producer_add in strgp
-                flush = check_opt('flush', store)
+                flush = check_opt('flush', store_group[store])
                 if flush:
                     self.write_opt_attr(fd, 'flush', flush, endline=False)
                 fd.write("\n")
-                if 'metrics' in store:
-                    print("store: metrics = {}\n".format(store["metrics"]))
-                    for met in store['metrics']:
-                        strgp_metric_add = f'strgp_metric_add name={store_name} '
+                if 'metrics' in store_group[store]:
+                    print("store: metrics = {}\n".format(store_group[store]["metrics"]))
+                    for met in store_group[store]['metrics']:
+                        strgp_metric_add = f'strgp_metric_add name={store} '
                         strgp_metric_add += f'{met}\n'
                         fd.write(strgp_metric_add)
                 if 'producers' in store:
-                    print("store: producers = {}\n".format(store["producers"]))
-                    for ex in store['producers']:
-                        strgp_prdcr_add = f'strgp_prdcr_add name={store_name} '
+                    print("store: producers = {}\n".format(store_group[store]["producers"]))
+                    for ex in store_group['store']['producers']:
+                        strgp_prdcr_add = f'strgp_prdcr_add name={store} '
                         strgp_prdcr_add += f'{parse_to_cfg_str(ex)}\n'
                         fd.write(strgp_prdcr_add)
-                fd.write(f'strgp_start name={store_name}\n')
-
-
-    def map_tilde(self, d, key):
-        """expand ~{} valued names from other items in the same map d."""
-        if not key in d:
-            return None
-        import re
-        if not hasattr(self, 're_tilde'):
-            self.re_tilde = re.compile(r'~\{[^~{}]+\}')
-        val = d[key]
-        newval = ""
-        last = 0
-        changed = False
-        for m in self.re_tilde.finditer(val):
-            newval += val[last:m.start()]
-            last = m.end()
-            var = m.string[m.start():m.end()][2:-1]
-            if var in d:
-                s = d[var]
-            else:
-                s=""
-            changed = True
-            newval += str(s)
-        newval += val[last:]
-        return newval
+                fd.write(f'strgp_start name={store}\n')
 
     def config_v4(self, path):
         """
@@ -607,7 +590,6 @@ class Cluster(object):
                         self.write_samplers(fd, smplr_group)
                         if 'epilog' in self.samplers[smplr_group]:
                             fd.write(f'# epilog\n{self.samplers[smplr_group]["epilog"]}\n')
-                    if fd:
                         fd.close()
                 except Exception as e:
                     a, b, d = sys.exc_info()
@@ -660,7 +642,7 @@ if __name__ == "__main__":
                         default=False)
     parser.add_argument("--noetcd", action='store_true', default=False,
                         help="Create .noetcd file $FILE.noetcd to feed"
-                        " maestro (default: use etcd)");
+                        " maestro when there is no etcd service (default: use etcd)");
     parser.add_argument("--debug", action='store_true', default=False,
                         help="Enable debugging outputs");
     parser.add_argument("--version", metavar="VERSION",
@@ -686,11 +668,11 @@ if __name__ == "__main__":
     if not conf_spec:
         print("empty {}. doing nothing.".format(args.ldms_config))
         sys.exit(1)
+    import pprint
     if args.debug:
         # dump expanded yaml
-        import pprint
-        f=open(args.ldms_config+".debug" , 'w+')
-        pp = pprint.PrettyPrinter(indent=4, stream=f, compact=True)
+        f = open(args.ldms_config+".debug" , 'w+')
+        pp = pprint.PrettyPrinter(indent=4, stream=f, compact=False)
         pp.pprint(conf_spec)
         print("wrote {}\n".format(args.ldms_config+".debug" ))
 

@@ -1,10 +1,16 @@
-cluster : prod
+%YAML 1.1
+---
+cluster : wprod
 
 namelists:
-  nodes: &all-nodes "pr[1-288],prod-login[1-3],pross[1-4],prmds[1-2],prldms1"
-  ib-nodes: &all-hosts "pr[1-288]-ib0,prod-login[1-3]-ib0,pross[1-4]-ib0,prmds[1-2]-ib0,prldms1-ib0"
-  rdma-nodes: &all-rdma "pr[1-288]/rdma,prod-login[1-3]/rdma,pross[1-4]/rdma,prmds[1-2]/rdma,prldms1/rdma"
-  sock-nodes: &all-sock "pr[1-288]/sock,prod-login[1-3]/sock,pross[1-4]/sock,prmds[1-2]/sock,prldms1/sock"
+  nodes: &all-nodes "wp[1-288],wprod-login[1-3],wposs[1-4],wpmds[1-2],wpldms1"
+  ib-nodes: &all-hosts "wp[1-288]-ib0,wprod-login[1-3]-ib0,wposs[1-4]-ib0,wpmds[1-2]-ib0,wpldms1-ib0"
+  rdma-nodes: &all-rdma "wp[1-288]/rdma,wprod-login[1-3]/rdma,wposs[1-4]/rdma,wpmds[1-2]/rdma,wpldms1/rdma"
+  sock-nodes: &all-sock "wp[1-288]/sock,wprod-login[1-3]/sock,wposs[1-4]/sock,wpmds[1-2]/sock,wpldms1/sock"
+  arm-nodes: &arm-nodes "wp[1-288],wprod-login[1-3]"
+  arm-hosts: &arm-hosts "wp[1-288]-ib0,wprod-login[1-3]-ib0"
+  x86-nodes: &x86-nodes "wposs[1-4],wpmds[1-2],wpldms1"
+  x86-hosts: &x86-hosts "wposs[1-4]-ib0,wpmds[1-2]-ib0,wpldms1-ib0"
 
 daemons:
   - names : *all-nodes 
@@ -24,11 +30,48 @@ daemons:
         xprt : sock
         auth :
           name : munge
+          bob : ~{xprt}
+
+  - names : *arm-nodes 
+    hosts : *arm-hosts
+    endpoints :
+      - names : *all-rdma
+        ports : *rdma-port
+        maestro_comm : False
+        xprt : rdma
+        auth :
+          name : ovis
+          conf : /etc/sysconfig/ldms.d/ClusterSecrets/ldmsauth.conf
+
+      - names : *all-sock
+        ports : *sock-port
+        maestro_comm : False
+        xprt : sock
+        auth :
+          name : munge
+
+  - names : *x86-nodes 
+    hosts : *x86-hosts
+    endpoints :
+      - names : *all-rdma
+        ports : *rdma-port
+        maestro_comm : False
+        xprt : rdma
+        auth :
+          name : ovis
+          conf : /etc/sysconfig/ldms.d/ClusterSecrets/ldmsauth.conf
+
+      - names : *all-sock
+        ports : *sock-port
+        maestro_comm : False
+        xprt : sock
+        auth :
+          name : munge
 
   - names : &agg-name L1d-agg
-    hosts : prldms1
+    hosts : wpldms1
     endpoints :
-      - names : prldms1-agg
+      - names : wpldms1-agg
         ports : "413"
         maestro_comm : False
         xprt : sock
@@ -76,13 +119,15 @@ sampler_time_defaults : &sampler-time-defaults
   interval : "1s"
   offset : "0s"
 
-sampler_config_defaults : &sampler-config-defaults
-  job_set : ${host}/jobid
-  component_id: ${COMPONENT_ID}
-  schema : ~{name}
-  instance : ${host}/~{schema}
-  job_set : ${host}/jobid
-  perm : "0644"
+sampler_all_defaults : &sampler-all-defaults
+  <<: *sampler-time-defaults
+  config : &sampler-config-defaults
+    job_set : ${host}/jobid
+    component_id: ${COMPONENT_ID}
+    schema : ~{name}
+    instance : ${host}/~{schema}
+    producer : ${host}
+    perm : "0644"
 
 samplers:
   - daemons : *agg-name
@@ -105,8 +150,8 @@ samplers:
           <<: *sampler-config-defaults
           schema : meminfo_l1
 
-  - daemons : *all-nodes
-    file : L0-samplers
+  - daemons : *x86-nodes
+    file : L0-samplers.x86_64
     prolog : |
       metric_sets_default_authz perm=0644
     epilog : |
@@ -118,44 +163,26 @@ samplers:
         config :
           <<: *sampler-config-defaults
           file : /var/run/ldms.slurm.jobinfo
-      - <<: *sampler-time-defaults
+      - <<: *sampler-all-defaults
         name : lustre_client
-        config :
-          <<: *sampler-config-defaults
-      - <<: *sampler-time-defaults
+      - <<: *sampler-all-defaults
         name : loadavg
-        config :
-          <<: *sampler-config-defaults
-      - <<: *sampler-time-defaults
-        name : tx2mon
-        config :
-          <<: *sampler-config-defaults
-      - <<: *sampler-time-defaults
+      - <<: *sampler-all-defaults
         name : meminfo
-        config :
-          <<: *sampler-config-defaults
-      - <<: *sampler-time-defaults
+      - <<: *sampler-all-defaults
         name : lnet_stats
-        config :
-          <<: *sampler-config-defaults
-      - <<: *sampler-time-defaults
+      - <<: *sampler-all-defaults
         name : vmstat
-        config :
-          <<: *sampler-config-defaults
-      - <<: *sampler-time-defaults
+      - <<: *sampler-all-defaults
         name : procnfs
-        config :
-          <<: *sampler-config-defaults
+      - <<: *sampler-all-defaults
+        name : procnet
       - <<: *sampler-time-defaults
         name : procstat
         config :
           <<: *sampler-config-defaults
           maxcpu : 0
           schema : procstat_0
-      - <<: *sampler-time-defaults
-        name : procnet
-        config :
-          <<: *sampler-config-defaults
       - <<: *sampler-time-defaults
         name : sysclassib
         config :
@@ -172,6 +199,56 @@ samplers:
           fdtypes : 1
           auto-schema : 1
 
+  - daemons : *arm-nodes
+    file : L0-samplers.aarch64
+    prolog : |
+      metric_sets_default_authz perm=0644
+    epilog : |
+      auth_add name=munge plugin=munge
+      listen port=412 xprt=sock auth=munge
+    plugins :
+      - <<: *sampler-time-defaults
+        name : jobid
+        config :
+          <<: *sampler-config-defaults
+          file : /var/run/ldms.slurm.jobinfo
+      - <<: *sampler-all-defaults
+        name : tx2mon
+      - <<: *sampler-all-defaults
+        name : lustre_client
+      - <<: *sampler-all-defaults
+        name : loadavg
+      - <<: *sampler-all-defaults
+        name : meminfo
+      - <<: *sampler-all-defaults
+        name : lnet_stats
+      - <<: *sampler-all-defaults
+        name : vmstat
+      - <<: *sampler-all-defaults
+        name : procnfs
+      - <<: *sampler-all-defaults
+        name : procnet
+      - <<: *sampler-time-defaults
+        name : procstat
+        config :
+          <<: *sampler-config-defaults
+          maxcpu : 0
+          schema : procstat_0
+      - <<: *sampler-time-defaults
+        name : sysclassib
+        config :
+          <<: *sampler-config-defaults
+          ports : "mlx5_0.1,mlx5_1.1"
+          schema : sysclassib_lserver
+      - <<: *sampler-time-defaults
+        name : dstat
+        config :
+          <<: *sampler-config-defaults
+          io : 1
+          stat : 1
+          statm : 1
+          fdtypes : 1
+          auto-schema : 1
 
 store_config_defaults: &csv-defaults
   name : csv-~{schema}
@@ -219,5 +296,6 @@ stores:
   - <<: *csv-defaults
     schema : dstat_37
     producers:
-      - regex : "pr1.*"
-      - regex : "pr2.*"
+      - regex : "wp1.*"
+      - regex : "wp2.*"
+...
